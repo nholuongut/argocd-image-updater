@@ -1,0 +1,119 @@
+name: Integration tests
+on:
+  push:
+    branches:
+    - 'main'
+    - 'release-*'
+  pull_request:
+    branches:
+    - 'main'
+
+jobs:
+  check-go:
+    name: Ensure Go modules synchronicity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Golang
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Download all Go modules
+        run: |
+          go mod download
+      - name: Check for tidyness of go.mod and go.sum
+        run: |
+          go mod tidy
+          git diff --exit-code -- .
+  codegen:
+    name: Run codegen
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Install Kustomize v2
+        run: |
+          set -xo pipefail
+          URL="https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.1.0/kustomize_v5.1.0_linux_amd64.tar.gz"
+          BINNAME=kustomize
+          curl -sLf --retry 3 -o /tmp/kustomize.tar.gz "$URL"
+          chksum=$(sha256sum /tmp/kustomize.tar.gz | awk '{ print $1; }')
+          if test "${chksum}" != "52f4cf1ba34d38fd55a9bef819e329c9a4561f5f57f8f539346038ab5026dda8"; then
+            echo "Checksum mismatch" >&2
+            exit 1
+          fi
+          tar -C /tmp -xvzf /tmp/kustomize.tar.gz
+          sudo mv /tmp/kustomize /usr/local/bin/kustomize
+          chmod +x /usr/local/bin/kustomize
+      - name: Run make manifests
+        run: |
+          make manifests
+      - name: Check nothing has changed
+        run: |
+          set -xo pipefail
+          git diff --exit-code -- . ':!go.sum' ':!go.mod' ':!assets/swagger.json' | tee codegen.patch
+  lint:
+    name: Ensure code is correctly linted
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Golang
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: false
+        env:
+          GO111MODULE: off
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.59.1
+          args: --timeout 5m
+  test:
+    name: Ensure unit tests are passing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Golang
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Run tests
+        env:
+          GNUPG_DISABLED: true
+        run: |
+          make test
+      - name: Upload code coverage information to codecov.io
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          file: coverage.out
+
+  test-manifests:
+    name: Ensure kubernetes manifests conform to their schema
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Install Kubeconform
+        run: |
+          set -xo pipefail
+
+          curl -sLf --retry 3 \
+            -o /tmp/kubeconform.tar.gz \
+            "https://github.com/nholuongut/kubeconform/releases/download/v0.6.6/kubeconform-linux-amd64.tar.gz" 
+          chksum=$(sha256sum /tmp/kubeconform.tar.gz | awk '{ print $1; }')
+          if test "${chksum}" != "2ff56999a6ed9e96fe5ab9ee52271f2db5335baf7f17789035b9561970cdd3eb"; then
+            echo "Checksum mismatch" >&2
+            exit 1
+          fi
+
+          tar -C /tmp -xvzf /tmp/kubeconform.tar.gz
+          sudo mv /tmp/kubeconform /usr/local/bin/kubeconform
+          chmod +x /usr/local/bin/kubeconform
+      - name: Run manifest tests
+        run: |
+          make test-manifests
