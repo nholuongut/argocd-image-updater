@@ -1,4 +1,4 @@
-FROM golang:1.23 AS builder
+FROM golang:1.24 AS builder
 LABEL maintainer="Nho Luong <luongutnho@hotmail.com>"
 RUN mkdir -p /src/argocd-image-updater
 WORKDIR /src/argocd-image-updater
